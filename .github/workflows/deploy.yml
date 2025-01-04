@@ -46,3 +46,6 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Update lambda image
+        run: aws lambda update-function-code --function-name import_glosses --image-uri ${{ steps.login-ecr.outputs.registry }}/globalbibletools-import-worker:latest
