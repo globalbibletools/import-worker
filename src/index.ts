@@ -9,6 +9,7 @@ if (!connectionString) {
     throw new Error('DATABASE_URL env var missing');
 }
 const client = new pg.Client(connectionString)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function query<T extends QueryResultRow>(text: string, params: any): Promise<QueryResult<T>> {
   return client.query(text, params)
 }
