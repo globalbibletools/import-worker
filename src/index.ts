@@ -1,23 +1,25 @@
-import pg, { type QueryResult, type QueryResultRow } from 'pg'
-import bookKeys from './book-keys.json';
-import { type SQSEvent } from 'aws-lambda'
+import pg, { type QueryResult, type QueryResultRow } from "pg";
+import bookKeys from "./book-keys.json";
+import { type SQSEvent } from "aws-lambda";
 
-const IMPORT_SERVER = 'https://hebrewgreekbible.online';
+const IMPORT_SERVER = "https://hebrewgreekbible.online";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-    throw new Error('DATABASE_URL env var missing');
+  throw new Error("DATABASE_URL env var missing");
 }
-const client = new pg.Client(connectionString)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function query<T extends QueryResultRow>(text: string, params: any): Promise<QueryResult<T>> {
-  return client.query(text, params)
+const client = new pg.Client(connectionString);
+export async function query<T extends QueryResultRow>(
+  text: string,
+  params: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+): Promise<QueryResult<T>> {
+  return client.query(text, params);
 }
 
 export async function handler(event: SQSEvent) {
-    const { languageCode, importLanguage } = JSON.parse(event.Records[0].body)
-    const jobQuery = await query<{ languageId: string, userId: string }>(
-        `
+  const { languageCode, importLanguage } = JSON.parse(event.Records[0].body);
+  const jobQuery = await query<{ languageId: string; userId: string }>(
+    `
         SELECT
             j.language_id AS "languageId",
             j.user_id AS "userId"
@@ -25,74 +27,70 @@ export async function handler(event: SQSEvent) {
         JOIN language AS l ON l.id = j.language_id
         WHERE l.code = $1
         `,
-        [languageCode]
-    )
-    const job = jobQuery.rows[0]
-    if (!job) {
-        throw new Error(`no import job for language ${languageCode}`)
-    }
+    [languageCode],
+  );
+  const job = jobQuery.rows[0];
+  if (!job) {
+    throw new Error(`no import job for language ${languageCode}`);
+  }
 
-    log(languageCode, 'starting import')
+  log(languageCode, "starting import");
 
-    await query(
-        `
+  await query(
+    `
         UPDATE phrase SET
             deleted_at = NOW(),
             deleted_by = $2::uuid
         WHERE language_id = $1::uuid
             AND deleted_at IS NULL
         `,
-        [job.languageId, job.userId]
-    )
-    log(languageCode, `existing phrases deleted`);
+    [job.languageId, job.userId],
+  );
+  log(languageCode, `existing phrases deleted`);
 
-    for (const key of bookKeys) {
-        try {
-            log(languageCode, `${key} ... start`);
+  for (const key of bookKeys) {
+    try {
+      log(languageCode, `${key} ... start`);
 
-            const bookId = bookKeys.indexOf(key) + 1;
-            const glossUrl = `${IMPORT_SERVER}/${importLanguage}Glosses/${key}Gloss.js`;
-            const bookData = await fetchGlossData(glossUrl);
+      const bookId = bookKeys.indexOf(key) + 1;
+      const glossUrl = `${IMPORT_SERVER}/${importLanguage}Glosses/${key}Gloss.js`;
+      const bookData = await fetchGlossData(glossUrl);
 
-            const glossData: {
-                wordId: string;
-                gloss: string;
-                phraseId: number;
-            }[] = [];
+      const glossData: {
+        wordId: string;
+        gloss: string;
+        phraseId: number;
+      }[] = [];
 
-            for (
-                let chapterNumber = 1;
-                chapterNumber <= bookData.length;
-                chapterNumber++
-            ) {
-                const chapterData = bookData[chapterNumber - 1];
-                for (
-                    let verseNumber = 1;
-                    verseNumber <= chapterData.length;
-                    verseNumber++
-                ) {
-                    const verseData = chapterData[verseNumber - 1];
-                    let wordNumber = 0;
-                    for (
-                        let wordIndex = 0;
-                        wordIndex < verseData.length;
-                        wordIndex++
-                    ) {
-                        wordNumber += 1;
-                        const wordId = [
-                            bookId.toString().padStart(2, '0'),
-                            chapterNumber.toString().padStart(3, '0'),
-                            verseNumber.toString().padStart(3, '0'),
-                            wordNumber.toString().padStart(2, '0'),
-                        ].join('');
-                        const gloss = verseData[wordIndex][0];
-                        glossData.push({ wordId, gloss, phraseId: 0 });
-                    }
-                }
-            }
+      for (
+        let chapterNumber = 1;
+        chapterNumber <= bookData.length;
+        chapterNumber++
+      ) {
+        const chapterData = bookData[chapterNumber - 1];
+        for (
+          let verseNumber = 1;
+          verseNumber <= chapterData.length;
+          verseNumber++
+        ) {
+          const verseData = chapterData[verseNumber - 1];
+          let wordNumber = 0;
+          for (let wordIndex = 0; wordIndex < verseData.length; wordIndex++) {
+            wordNumber += 1;
+            const wordId = [
+              bookId.toString().padStart(2, "0"),
+              chapterNumber.toString().padStart(3, "0"),
+              verseNumber.toString().padStart(3, "0"),
+              wordNumber.toString().padStart(2, "0"),
+            ].join("");
+            const gloss = verseData[wordIndex][0];
+            glossData.push({ wordId, gloss, phraseId: 0 });
+          }
+        }
+      }
 
-            await query(
-                `
+      await query(
+        `
                 WITH data AS (
                     SELECT UNNEST($3::text[]) AS word_id, UNNEST($4::text[]) AS gloss
                 ),
@@ -120,52 +118,56 @@ export async function handler(event: SQSEvent) {
                 JOIN phw ON phw.phrase_id = phrase.id
                 JOIN data ON data.word_id = phw.word_id
                 `,
-                [job.languageId, job.userId, glossData.map(d => d.wordId), glossData.map(d => d.gloss)]
-            )
+        [
+          job.languageId,
+          job.userId,
+          glossData.map((d) => d.wordId),
+          glossData.map((d) => d.gloss),
+        ],
+      );
 
-            log(languageCode, `${key} ... complete`);
-        } catch (error) {
-            log(languageCode, `${error}`);
-        }
+      log(languageCode, `${key} ... complete`);
+    } catch (error) {
+      log(languageCode, `${error}`);
     }
+  }
 
-    await query(
-        `
+  await query(
+    `
         UPDATE language_import_job
         SET
             end_date = NOW(),
             succeeded = TRUE
         WHERE language_id = $1
         `,
-        [job.languageId]
-    )
+    [job.languageId],
+  );
 
-    log(languageCode, 'import complete')
+  log(languageCode, "import complete");
 }
 
 function log(languageCode: string, message: string) {
-    console.log(`IMPORT (${languageCode}) ${message}`)
+  console.log(`IMPORT (${languageCode}) ${message}`);
 }
 
 async function fetchGlossData(url: string) {
-    const response = await fetch(url);
-    const jsCode = await response.text();
-    return parseGlossJs(jsCode.trim());
+  const response = await fetch(url);
+  const jsCode = await response.text();
+  return parseGlossJs(jsCode.trim());
 }
 
 function parseGlossJs(jsCode: string) {
-    // If there are multiple var declarations, keep only the first one.
-    const varLines = jsCode.split('\n').filter((line) => line.startsWith('var '));
-    if (varLines.length > 1) {
-        jsCode = jsCode.substring(0, jsCode.indexOf(varLines[1]));
-    }
-    // Remove the var prefix.
-    jsCode = jsCode.replace(/var \w+=/gm, '');
-    // Remove the comments and the final semicolon.
-    jsCode = jsCode.replace(/\/\/.*|;$/gm, '');
-    // Remove trailing commas.
-    // Simplified from https://github.com/nokazn/strip-json-trailing-commas/blob/beced788eb7c35d8b5d26b368dff295455a0aef4/src/index.ts#L21
-    jsCode = jsCode.replace(/(?<=(["\]])\s*),(?=\s*[\]])/g, '');
-    return JSON.parse(jsCode);
+  // If there are multiple var declarations, keep only the first one.
+  const varLines = jsCode.split("\n").filter((line) => line.startsWith("var "));
+  if (varLines.length > 1) {
+    jsCode = jsCode.substring(0, jsCode.indexOf(varLines[1]));
+  }
+  // Remove the var prefix.
+  jsCode = jsCode.replace(/var \w+=/gm, "");
+  // Remove the comments and the final semicolon.
+  jsCode = jsCode.replace(/\/\/.*|;$/gm, "");
+  // Remove trailing commas.
+  // Simplified from https://github.com/nokazn/strip-json-trailing-commas/blob/beced788eb7c35d8b5d26b368dff295455a0aef4/src/index.ts#L21
+  jsCode = jsCode.replace(/(?<=(["\]])\s*),(?=\s*[\]])/g, "");
+  return JSON.parse(jsCode);
 }
-
